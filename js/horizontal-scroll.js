@@ -11,6 +11,7 @@
     gsap.registerPlugin(ScrollTrigger);
     const media = gsap.matchMedia();
     let pendingSlideId = null;
+    let initialized = false;
 
     const getVisibleSlide = () => {
         const pageTop = story.getBoundingClientRect().top + window.scrollY;
@@ -25,39 +26,69 @@
     };
 
     media.add("(min-width: 992px) and (prefers-reduced-motion: no-preference)", () => {
+        const hashSlide = slides.find(slide => slide.id === location.hash.slice(1));
         const slideToRestore = pendingSlideId
-            || slides.find(slide => slide.id === location.hash.slice(1))?.id
+            || hashSlide?.id
             || getVisibleSlide();
+        if (!initialized && hashSlide && window.scrollY > 0) window.scrollTo(0, 0);
+        initialized = true;
         story.classList.add("is-horizontal");
         const resizeSlides = () => {
-            const navHeight = document.querySelector(".site-header").offsetHeight;
             viewport.scrollLeft = 0;
             gsap.set(slides, {
                 width: viewport.clientWidth,
                 flexBasis: `${viewport.clientWidth}px`
             });
-            story.style.height = `${Math.max(viewport.clientHeight, track.scrollWidth - viewport.clientWidth - navHeight) + window.innerHeight}px`;
         };
 
         resizeSlides();
         ScrollTrigger.addEventListener("refreshInit", resizeSlides);
 
         let horizontalProgress = 0;
+        let progressBeforeResize = null;
         const tween = gsap.to(track, {
             x: () => -(track.scrollWidth - viewport.clientWidth),
             ease: "none",
             scrollTrigger: {
                 trigger: story,
                 pin: viewport,
-                pinSpacing: false,
                 anticipatePin: 1,
                 scrub: 0.6,
-                start: () => `top top+=${document.querySelector(".site-header").offsetHeight}`,
+                start: () => story.offsetTop - document.querySelector(".site-header").offsetHeight,
                 end: () => `+=${track.scrollWidth - viewport.clientWidth}`,
                 invalidateOnRefresh: true,
                 onUpdate: self => { horizontalProgress = self.progress; }
             }
         });
+
+        let skipInitialResize = true;
+        let viewportSize = [viewport.clientWidth, viewport.clientHeight];
+        const rememberProgress = () => { progressBeforeResize = horizontalProgress; };
+        window.addEventListener("resize", rememberProgress);
+        const resizeObserver = new ResizeObserver(() => {
+            const nextSize = [viewport.clientWidth, viewport.clientHeight];
+            if (skipInitialResize) {
+                skipInitialResize = false;
+                viewportSize = nextSize;
+                progressBeforeResize = null;
+                return;
+            }
+            if (nextSize[0] === viewportSize[0] && nextSize[1] === viewportSize[1]) {
+                progressBeforeResize = null;
+                return;
+            }
+            viewportSize = nextSize;
+
+            const trigger = tween.scrollTrigger;
+            const wasInStory = window.scrollY >= trigger.start;
+            const progress = progressBeforeResize ?? trigger.progress;
+            progressBeforeResize = null;
+            ScrollTrigger.refresh();
+            if (wasInStory) {
+                window.scrollTo(0, trigger.start + (trigger.end - trigger.start) * progress);
+            }
+        });
+        resizeObserver.observe(viewport);
 
         const scrollToSlide = (slideIndex, behavior = "smooth") => {
             const trigger = tween.scrollTrigger;
@@ -103,10 +134,11 @@
             pendingSlideId = slides[Math.round(horizontalProgress * (slides.length - 1))].id;
             document.removeEventListener("click", navigateToSlide);
             window.removeEventListener("load", restoreSlide);
+            window.removeEventListener("resize", rememberProgress);
+            resizeObserver.disconnect();
             ScrollTrigger.removeEventListener("refreshInit", resizeSlides);
             story.classList.remove("is-horizontal");
             gsap.set([track, ...slides], { clearProps: "transform,width,flexBasis" });
-            story.style.removeProperty("height");
 
             requestAnimationFrame(() => {
                 if (story.classList.contains("is-horizontal")) return;
